@@ -6,27 +6,27 @@ const client = new DynamoDBClient({})
 
 const ddbDocClient = DynamoDBDocumentClient.from(client)
 
-const commonHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "OPTIONS,POST,GET"
-}
-
 export const redirectShortLink = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+    console.log("Evento completo recebido: ", JSON.stringify(event, null, 2));
+    
     if (event.httpMethod === "OPTIONS") {
         return {
             statusCode: 200,
-            headers: commonHeaders,
             body: ''
         }
     }
 
-    const shortId = event.pathParameters?.shortId
+    let shortId = event.pathParameters?.shortId
+
+    const rawPath = (event as any).rawPath
+    if (!shortId && rawPath) {
+        shortId = rawPath.substring(1)
+        console.log("Short ID extraído do caminho: ", shortId);
+    }
 
     if (!shortId) {
         return {
             statusCode: 400,
-            headers: commonHeaders,
             body: JSON.stringify({ error: "Short ID não fornecido." })
         }
     }
@@ -44,7 +44,6 @@ export const redirectShortLink = async (event: APIGatewayProxyEvent): Promise<AP
         if (!Item || !Item.originalUrl) {
             return {
                 statusCode: 404,
-                headers: commonHeaders,
                 body: JSON.stringify({ error: "URL não encontrada." })
             }
         }
@@ -64,14 +63,13 @@ export const redirectShortLink = async (event: APIGatewayProxyEvent): Promise<AP
             ReturnValues: ReturnValue.NONE
         }
 
-        await ddbDocClient.send(new UpdateCommand(updateParams)).catch(err => {
+        ddbDocClient.send(new UpdateCommand(updateParams)).catch(err => {
             console.error("Erro ao atualizar contagem de cliques: ", err)
         })
 
         return {
             statusCode: 302,
             headers: {
-                ...commonHeaders,
                 Location: originalUrl
             },
             body: ''
@@ -81,7 +79,6 @@ export const redirectShortLink = async (event: APIGatewayProxyEvent): Promise<AP
         console.error("Erro ao redirecionar URL curta: ", error)
         return {
             statusCode: 500,
-            headers: commonHeaders,
             body: JSON.stringify({ error: "Erro interno do servidor." })
         }
     }

@@ -1,22 +1,15 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb"
 import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { getNextUniqueId } from "./utils/id-algorithm";
+import { generateUniqueShortId } from "./utils/id-algorithm";
 
 const client = new DynamoDBClient({})
 const ddbDocClient = DynamoDBDocumentClient.from(client)
-
-const commonHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "OPTIONS,POST,GET"
-}
 
 export const createShortLink = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     if (event.httpMethod === "OPTIONS") {
         return {
             statusCode: 200,
-            headers: commonHeaders,
             body: ''
         }
     }
@@ -24,7 +17,6 @@ export const createShortLink = async (event: APIGatewayProxyEvent): Promise<APIG
     if (!event.body) {
         return {
             statusCode: 400,
-            headers: commonHeaders,
             body: JSON.stringify({ error: "Insira uma URL válida." })
         }
     }
@@ -37,7 +29,6 @@ export const createShortLink = async (event: APIGatewayProxyEvent): Promise<APIG
         console.error("Erro no corpo da requisição: ", error)
         return {
             statusCode: 400,
-            headers: commonHeaders,
             body: JSON.stringify({ error: "Corpo da requisição inválido." })
         }
     }
@@ -47,30 +38,17 @@ export const createShortLink = async (event: APIGatewayProxyEvent): Promise<APIG
     if (!originalUrl) {
         return {
             statusCode: 400,
-            headers: commonHeaders,
             body: JSON.stringify({ error: "URL original não fornecida." })
         }
     }
 
     try {
-        let shortId: string | undefined = undefined;
+        let shortId: string;
         let isUnique = false;
         let attempts = 0;
         const MAX_ATTEMPTS = 5;
 
-        while (!isUnique && attempts < MAX_ATTEMPTS) {
-            shortId = await getNextUniqueId();
-            isUnique = true;
-            attempts++;
-        }
-
-        if (!isUnique || !shortId) {
-            return {
-                statusCode: 500,
-                headers: commonHeaders,
-                body: JSON.stringify({ error: "Não foi possível gerar um ID único após várias tentativas." })
-            }
-        }
+        shortId = await generateUniqueShortId();
 
         const params = {
             TableName: process.env.TABLE_NAME || "url-shortener",
@@ -79,17 +57,29 @@ export const createShortLink = async (event: APIGatewayProxyEvent): Promise<APIG
                 originalUrl: originalUrl,
                 createdAt: new Date().toISOString(),
                 clickCount: 0
-            }
+            },
+            ConditionExpression: "attribute_not_exists(shortId)"
         }
 
-        await ddbDocClient.send(new PutCommand(params))
+        try {
+            await ddbDocClient.send(new PutCommand(params))
+        } catch (dynamoError: any) {
+            if (dynamoError.name === "ConditionalCheckFailedException") {
+                console.warn(`Colisão de short Id detectada: ${shortId}`)
+                return {
+                    statusCode: 409,
+                    body: JSON.stringify({ error: "Colisão de id detectada. Tente novamente." })
+                }
+            } else {
+                throw dynamoError;
+            }
+        }
 
         const baseUrl = process.env.BASE_URL 
         const fullShortUrl = `${baseUrl}/${shortId}`
 
         return {
             statusCode: 201,
-            headers: commonHeaders,
             body: JSON.stringify({
                 shortId: fullShortUrl,
                 originalUrl: originalUrl,
@@ -100,7 +90,6 @@ export const createShortLink = async (event: APIGatewayProxyEvent): Promise<APIG
         console.error("Erro ao criar o link curto: ", error)
         return {
             statusCode: 500,
-            headers: commonHeaders,
             body: JSON.stringify({ message: "Erro ao criar o link curto.", error: (error as Error).message })
         }
     }
